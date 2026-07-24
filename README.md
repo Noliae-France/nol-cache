@@ -8,13 +8,13 @@ Dans le `nolc.toml` de votre projet :
 
 ```toml
 [dependances]
-"nol.cache" = { git = "https://github.com/Noliae-France/nol-cache" }
+"nol-cache" = { git = "https://github.com/Noliae-France/nol-cache" }
 ```
 
 ## Exemple
 
 ```nol
-import "nol.cache"
+import "nol-cache"
 
 fn main() {
     let c = cache_neuf(1000)          // capacité max : 1000 entrées (0 = illimité)
