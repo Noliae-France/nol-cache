@@ -1,6 +1,6 @@
 # nol.cache
 
-Cache mémoire **TTL / LRU** en pur [Nolc](https://github.com/Noliae-France/nolc), sans aucune dépendance. Interface calquée sur les verbes de Redis (`set`/`get`/`del`/`exists`/`setex`/`ttl`/`flushall`/`dbsize`) pour qu'un code écrit contre ce cache mémoire puisse plus tard viser un backend distant **sans changer d'API** — Redis n'est jamais obligatoire.
+Cache mémoire **TTL / LRU** en pur [Nolc](https://noliae-nolc.s3.gra.io.cloud.ovh.net/nolc-latest-linux-x86_64.tar.gz), sans aucune dépendance. Interface calquée sur les verbes de Redis (`set`/`get`/`del`/`exists`/`setex`/`ttl`/`flushall`/`dbsize`) pour qu'un code écrit contre ce cache mémoire puisse plus tard viser un backend distant **sans changer d'API** — Redis n'est jamais obligatoire.
 
 ## Installation
 

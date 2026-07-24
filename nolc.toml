@@ -2,7 +2,7 @@
 nom = "nol-cache"
 version = "0.1.0"
 entree = "src/lib.nol"
-auteur = "Bastien LANGUEDOC"
+auteur = "daliranas <bastien@languedoc.ovh>"
 licence = "MIT"
 description = "Cache mémoire TTL/LRU en pur Nolc, interface compatible Redis, sans dépendance."
 
