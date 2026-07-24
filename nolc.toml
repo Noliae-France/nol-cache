@@ -1,5 +1,5 @@
 [projet]
-nom = "nol.cache"
+nom = "nol-cache"
 version = "0.1.0"
 entree = "src/lib.nol"
 auteur = "Bastien LANGUEDOC"
