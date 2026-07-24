@@ -1,0 +1,18 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    name: Tests (nolc)
+    runs-on: [self-hosted, noliae]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer nolc (release souveraine)
+        run: |
+          curl -fsSL https://noliae-nolc.s3.gra.io.cloud.ovh.net/nolc-latest-linux-x86_64.tar.gz -o /tmp/nolc.tgz
+          tar xzf /tmp/nolc.tgz -C /tmp
+          echo "NOLC=$(find /tmp -name nolc -type f -perm -u+x | head -1)" >> "$GITHUB_ENV"
+      - name: Tests
+        run: "$NOLC" test src/lib.nol

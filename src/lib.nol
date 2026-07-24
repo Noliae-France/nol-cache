@@ -1,0 +1,257 @@
+// nol.cache — cache mémoire avec TTL et éviction LRU, en pur Nolc.
+//
+// Aucune dépendance externe : ni Redis, ni serveur. L'interface reprend les
+// verbes de Redis (set/get/del/exists/setex/ttl/flushall/dbsize) pour qu'un
+// code écrit contre un cache mémoire puisse plus tard viser un backend distant
+// sans changer d'API. Redis n'est JAMAIS obligatoire.
+//
+// Modèle mémoire : les entrées vivent dans une Map (sémantique de référence en
+// Nolc), donc les mutations traversent les appels. L'ordre LRU est porté par un
+// « tick » logique stocké dans chaque entrée — aucun état scalaire mutable, ce
+// qui évite le piège Nolc de la copie des scalaires.
+
+extern fn time(tloc: Ptr) -> Int depuis "time.h"
+
+// Secondes epoch UNIX (UTC). Utilisé pour l'expiration TTL.
+fn cache_maintenant() -> Int {
+    unsafe {
+        return time(ptr_null())
+    }
+}
+
+// Une entrée du cache.
+record EntreeCache {
+    valeur: Text,
+    expire: Int,  // epoch d'expiration ; 0 = n'expire jamais
+    tick: Int  // tick logique du dernier accès (ordre LRU)
+}
+
+// Le cache : une table clé (Text) -> entrée, plus une capacité maximale.
+record Cache {
+    entrees: Map<EntreeCache>,
+    capacite: Int  // nombre max d'entrées ; 0 = illimité
+}
+
+// Crée un cache vide. `capacite <= 0` => pas de limite (pas d'éviction LRU).
+fn cache_neuf(capacite: Int) -> Cache {
+    return Cache { entrees: map_new(), capacite: capacite }
+}
+
+// Tick logique suivant : max des ticks existants + 1. Ordre strictement
+// monotone sans compteur mutable partagé.
+fn cache_prochain_tick(c: Cache) -> Int {
+    var m = 0
+    for cle in map_keys(c.entrees) {
+        let e = unwrap_or(map_get(c.entrees, cle), EntreeCache { valeur: "", expire: 0, tick: 0 })
+        if e.tick > m {
+            m = e.tick
+        }
+    }
+    return m + 1
+}
+
+// Une entrée est-elle expirée à l'instant présent ?
+fn cache_entree_expiree(e: EntreeCache) -> Bool {
+    return e.expire > 0 and cache_maintenant() >= e.expire
+}
+
+// Nombre d'entrées STOCKÉES (expirées non encore purgées comprises).
+fn cache_taille(c: Cache) -> Int {
+    return len(map_keys(c.entrees))
+}
+
+// Retire toutes les entrées expirées. À appeler périodiquement si besoin ;
+// l'expiration est de toute façon appliquée paresseusement à la lecture.
+fn cache_purger(c: Cache) {
+    for cle in map_keys(c.entrees) {
+        let e = unwrap_or(map_get(c.entrees, cle), EntreeCache { valeur: "", expire: 0, tick: 0 })
+        if cache_entree_expiree(e) {
+            let _r = map_remove(c.entrees, cle)
+        }
+    }
+}
+
+// Éviction LRU : tant que la taille dépasse la capacité, retire l'entrée au
+// tick minimal (la moins récemment utilisée).
+fn cache_eviction(c: Cache) {
+    if c.capacite <= 0 {
+        return
+    }
+    while cache_taille(c) > c.capacite {
+        var min_tick = 0
+        var min_cle = ""
+        var premier = true
+        for cle in map_keys(c.entrees) {
+            let e = unwrap_or(map_get(c.entrees, cle), EntreeCache { valeur: "", expire: 0, tick: 0 })
+            if premier or e.tick < min_tick {
+                min_tick = e.tick
+                min_cle = cle
+                premier = false
+            }
+        }
+        if premier {
+            return
+        }
+        let _r = map_remove(c.entrees, min_cle)
+    }
+}
+
+// Insère/écrase une clé avec une expiration ABSOLUE (epoch). `expire = 0` =>
+// jamais. Base commune des autres écritures ; utile aussi pour tester le TTL de
+// façon déterministe.
+fn cache_poser_expire(c: Cache, cle: Text, valeur: Text, expire: Int) {
+    cache_purger(c)
+    map_set(c.entrees, cle, EntreeCache { valeur: valeur, expire: expire, tick: cache_prochain_tick(c) })
+    cache_eviction(c)
+}
+
+// Insère/écrase une clé avec un TTL en secondes. `ttl_secondes <= 0` => jamais.
+fn cache_poser(c: Cache, cle: Text, valeur: Text, ttl_secondes: Int) {
+    var expire = 0
+    if ttl_secondes > 0 {
+        expire = cache_maintenant() + ttl_secondes
+    }
+    cache_poser_expire(c, cle, valeur, expire)
+}
+
+// Lit une clé. Applique l'expiration (retire l'entrée si expirée) et rafraîchit
+// son ordre LRU. `none` si absente ou expirée.
+fn cache_obtenir(c: Cache, cle: Text) -> Option<Text> {
+    if not map_has(c.entrees, cle) {
+        return none
+    }
+    let e = unwrap_or(map_get(c.entrees, cle), EntreeCache { valeur: "", expire: 0, tick: 0 })
+    if cache_entree_expiree(e) {
+        let _r = map_remove(c.entrees, cle)
+        return none
+    }
+    map_set(c.entrees, cle, EntreeCache { valeur: e.valeur, expire: e.expire, tick: cache_prochain_tick(c) })
+    return some(e.valeur)
+}
+
+// La clé est-elle présente ET non expirée ?
+fn cache_contient(c: Cache, cle: Text) -> Bool {
+    if not map_has(c.entrees, cle) {
+        return false
+    }
+    let e = unwrap_or(map_get(c.entrees, cle), EntreeCache { valeur: "", expire: 0, tick: 0 })
+    if cache_entree_expiree(e) {
+        let _r = map_remove(c.entrees, cle)
+        return false
+    }
+    return true
+}
+
+// Secondes restantes avant expiration : -1 si absente/expirée, 0 si sans TTL.
+fn cache_ttl(c: Cache, cle: Text) -> Int {
+    if not cache_contient(c, cle) {
+        return -1
+    }
+    let e = unwrap_or(map_get(c.entrees, cle), EntreeCache { valeur: "", expire: 0, tick: 0 })
+    if e.expire == 0 {
+        return 0
+    }
+    return e.expire - cache_maintenant()
+}
+
+// Supprime une clé. Sans effet si absente.
+fn cache_supprimer(c: Cache, cle: Text) {
+    let _r = map_remove(c.entrees, cle)
+}
+
+// Vide entièrement le cache.
+fn cache_vider(c: Cache) {
+    for cle in map_keys(c.entrees) {
+        let _r = map_remove(c.entrees, cle)
+    }
+}
+
+// ---- Alias compatibles Redis (mêmes verbes, pour portabilité d'API) ----
+
+fn cache_set(c: Cache, cle: Text, valeur: Text) {
+    cache_poser(c, cle, valeur, 0)
+}
+fn cache_setex(c: Cache, cle: Text, ttl_secondes: Int, valeur: Text) {
+    cache_poser(c, cle, valeur, ttl_secondes)
+}
+fn cache_get(c: Cache, cle: Text) -> Option<Text> {
+    return cache_obtenir(c, cle)
+}
+fn cache_del(c: Cache, cle: Text) {
+    cache_supprimer(c, cle)
+}
+fn cache_exists(c: Cache, cle: Text) -> Bool {
+    return cache_contient(c, cle)
+}
+fn cache_flushall(c: Cache) {
+    cache_vider(c)
+}
+fn cache_dbsize(c: Cache) -> Int {
+    cache_purger(c)
+    return cache_taille(c)
+}
+
+// ============================ TESTS ============================
+
+fn test_set_get() {
+    let c = cache_neuf(0)
+    cache_set(c, "a", "1")
+    cache_set(c, "b", "2")
+    assert(unwrap_or(cache_get(c, "a"), "") == "1", "get a")
+    assert(unwrap_or(cache_get(c, "b"), "") == "2", "get b")
+    assert(cache_exists(c, "a"), "exists a")
+    assert(not cache_exists(c, "absent"), "absent")
+}
+
+fn test_ecrasement() {
+    let c = cache_neuf(0)
+    cache_set(c, "k", "v1")
+    cache_set(c, "k", "v2")
+    assert(unwrap_or(cache_get(c, "k"), "") == "v2", "ecrasement")
+    assert(cache_taille(c) == 1, "une seule entree apres ecrasement")
+}
+
+fn test_suppression() {
+    let c = cache_neuf(0)
+    cache_set(c, "x", "1")
+    cache_del(c, "x")
+    assert(not cache_exists(c, "x"), "supprimee")
+    assert(unwrap_or(cache_get(c, "x"), "ABSENT") == "ABSENT", "get none apres suppression")
+}
+
+fn test_ttl_expire() {
+    let c = cache_neuf(0)
+    // Expiration ABSOLUE dans le passé => immédiatement expirée (test déterministe).
+    cache_poser_expire(c, "vieux", "val", cache_maintenant() - 1)
+    assert(unwrap_or(cache_get(c, "vieux"), "ABSENT") == "ABSENT", "entree expiree illisible")
+    assert(not cache_exists(c, "vieux"), "entree expiree absente")
+    // TTL futur => encore là (via l'alias Redis setex).
+    cache_setex(c, "frais", 3600, "val")
+    assert(cache_exists(c, "frais"), "entree fraiche presente")
+    assert(cache_ttl(c, "frais") > 0, "ttl positif")
+    assert(cache_ttl(c, "absent") == -1, "ttl -1 si absent")
+}
+
+fn test_lru_eviction() {
+    let c = cache_neuf(2)
+    cache_set(c, "a", "1")
+    cache_set(c, "b", "2")
+    // Accès à "a" => "a" devient le plus récent, "b" le plus ancien.
+    let touche = cache_get(c, "a")
+    assert(unwrap_or(touche, "") == "1", "a lu")
+    // Insertion de "c" => capacité 2 dépassée => éviction du LRU = "b".
+    cache_set(c, "c", "3")
+    assert(cache_taille(c) == 2, "capacite respectee")
+    assert(cache_exists(c, "a"), "a conserve (recemment utilise)")
+    assert(cache_exists(c, "c"), "c present")
+    assert(not cache_exists(c, "b"), "b evince (le moins recemment utilise)")
+}
+
+fn test_vider() {
+    let c = cache_neuf(0)
+    cache_set(c, "a", "1")
+    cache_set(c, "b", "2")
+    cache_flushall(c)
+    assert(cache_taille(c) == 0, "vide")
+    assert(cache_dbsize(c) == 0, "dbsize 0")
+}
