@@ -15,4 +15,5 @@ jobs:
           tar xzf /tmp/nolc.tgz -C /tmp
           echo "NOLC=$(find /tmp -name nolc -type f -perm -u+x | head -1)" >> "$GITHUB_ENV"
       - name: Tests
-        run: "$NOLC" test src/lib.nol
+        run: |
+          "$NOLC" test src/lib.nol
